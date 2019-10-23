@@ -52,6 +52,7 @@ use fixed_hash::*;
 #[cfg(feature = "serialize")]
 use impl_serde::impl_fixed_hash_serde;
 use impl_rlp::impl_fixed_hash_rlp;
+use impl_codec::impl_fixed_hash_codec;
 use tiny_keccak::keccak256;
 
 // 3 according to yellowpaper
@@ -63,6 +64,8 @@ construct_fixed_hash!{
 	pub struct Bloom(BLOOM_SIZE);
 }
 impl_fixed_hash_rlp!(Bloom, BLOOM_SIZE);
+
+impl_fixed_hash_codec!(Bloom, BLOOM_SIZE);
 
 /// Returns log2.
 fn log2(x: usize) -> u32 {
