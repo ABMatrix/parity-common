@@ -1,4 +1,4 @@
-// Copyright 2015-2017 Parity Technologies
+// Copyright 2020 Parity Technologies
 //
 // Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
 // http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -6,11 +6,12 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use core::{fmt, cmp};
+use core::{cmp, fmt};
 
+use bytes::{Bytes, BytesMut};
 use hex_literal::hex;
 use primitive_types::{H160, U256};
-use rlp::{Encodable, Decodable, Rlp, RlpStream, DecoderError};
+use rlp::{Decodable, DecoderError, Encodable, Rlp, RlpStream};
 
 #[test]
 fn test_rlp_display() {
@@ -21,7 +22,7 @@ fn test_rlp_display() {
 
 #[test]
 fn length_overflow() {
-	let bs = [0xbf, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xe5];
+	let bs = hex!("bfffffffffffffffffffffffe5");
 	let rlp = Rlp::new(&bs);
 	let res: Result<u8, DecoderError> = rlp.as_val();
 	assert_eq!(Err(DecoderError::RlpInvalidLength), res);
@@ -48,6 +49,35 @@ fn rlp_at() {
 
 		let cat_again = rlp.at(0).unwrap();
 		assert!(cat_again.is_data());
+		assert_eq!(cat_again.as_raw(), &[0x83, b'c', b'a', b't']);
+		assert_eq!(cat_again.as_val::<String>().unwrap(), "cat".to_owned());
+	}
+}
+
+#[test]
+fn rlp_at_with_offset() {
+	let data = vec![0xc8, 0x83, b'c', b'a', b't', 0x83, b'd', b'o', b'g'];
+	{
+		let rlp = Rlp::new(&data);
+		assert!(rlp.is_list());
+		let animals: Vec<String> = rlp.as_list().unwrap();
+		assert_eq!(animals, vec!["cat".to_owned(), "dog".to_owned()]);
+
+		let (cat, cat_offset) = rlp.at_with_offset(0).unwrap();
+		assert!(cat.is_data());
+		assert_eq!(cat_offset, 1);
+		assert_eq!(cat.as_raw(), &[0x83, b'c', b'a', b't']);
+		assert_eq!(cat.as_val::<String>().unwrap(), "cat".to_owned());
+
+		let (dog, dog_offset) = rlp.at_with_offset(1).unwrap();
+		assert!(dog.is_data());
+		assert_eq!(dog_offset, 5);
+		assert_eq!(dog.as_raw(), &[0x83, b'd', b'o', b'g']);
+		assert_eq!(dog.as_val::<String>().unwrap(), "dog".to_owned());
+
+		let (cat_again, cat_offset) = rlp.at_with_offset(0).unwrap();
+		assert!(cat_again.is_data());
+		assert_eq!(cat_offset, 1);
 		assert_eq!(cat_again.as_raw(), &[0x83, b'c', b'a', b't']);
 		assert_eq!(cat_again.as_val::<String>().unwrap(), "cat".to_owned());
 	}
@@ -92,10 +122,13 @@ fn rlp_iter() {
 	}
 }
 
-struct ETestPair<T>(T, Vec<u8>) where T: Encodable;
+struct ETestPair<T>(T, Vec<u8>)
+where
+	T: Encodable;
 
 fn run_encode_tests<T>(tests: Vec<ETestPair<T>>)
-	where T: Encodable
+where
+	T: Encodable,
 {
 	for t in &tests {
 		let res = rlp::encode(&t.0);
@@ -103,10 +136,13 @@ fn run_encode_tests<T>(tests: Vec<ETestPair<T>>)
 	}
 }
 
-struct VETestPair<T>(Vec<T>, Vec<u8>) where T: Encodable;
+struct VETestPair<T>(Vec<T>, Vec<u8>)
+where
+	T: Encodable;
 
 fn run_encode_tests_list<T>(tests: Vec<VETestPair<T>>)
-	where T: Encodable
+where
+	T: Encodable,
 {
 	for t in &tests {
 		let res = rlp::encode_list(&t.0);
@@ -114,12 +150,32 @@ fn run_encode_tests_list<T>(tests: Vec<VETestPair<T>>)
 	}
 }
 
+impl<T, Repr> From<(T, Repr)> for ETestPair<T>
+where
+	T: Encodable,
+	Repr: Into<Vec<u8>>,
+{
+	fn from((v, repr): (T, Repr)) -> Self {
+		Self(v, repr.into())
+	}
+}
+
+impl<T, Repr> From<(Vec<T>, Repr)> for VETestPair<T>
+where
+	T: Encodable,
+	Repr: Into<Vec<u8>>,
+{
+	fn from((v, repr): (Vec<T>, Repr)) -> Self {
+		Self(v, repr.into())
+	}
+}
+
 #[test]
 fn encode_u16() {
 	let tests = vec![
-		ETestPair(0u16, vec![0x80u8]),
-		ETestPair(0x100, vec![0x82, 0x01, 0x00]),
-		ETestPair(0xffff, vec![0x82, 0xff, 0xff]),
+		ETestPair::from((0_u16, hex!("80"))),
+		ETestPair::from((0x100_u16, hex!("820100"))),
+		ETestPair::from((0xffff_u16, hex!("82ffff"))),
 	];
 	run_encode_tests(tests);
 }
@@ -127,9 +183,9 @@ fn encode_u16() {
 #[test]
 fn encode_u32() {
 	let tests = vec![
-		ETestPair(0u32, vec![0x80u8]),
-		ETestPair(0x0001_0000, vec![0x83, 0x01, 0x00, 0x00]),
-		ETestPair(0x00ff_ffff, vec![0x83, 0xff, 0xff, 0xff]),
+		ETestPair::from((0_u32, hex!("80"))),
+		ETestPair::from((0x0001_0000_u32, hex!("83010000"))),
+		ETestPair::from((0x00ff_ffff_u32, hex!("83ffffff"))),
 	];
 	run_encode_tests(tests);
 }
@@ -137,53 +193,87 @@ fn encode_u32() {
 #[test]
 fn encode_u64() {
 	let tests = vec![
-		ETestPair(0u64, vec![0x80u8]),
-		ETestPair(0x0100_0000, vec![0x84, 0x01, 0x00, 0x00, 0x00]),
-		ETestPair(0xFFFF_FFFF, vec![0x84, 0xff, 0xff, 0xff, 0xff]),
+		ETestPair::from((0_u64, hex!("80"))),
+		ETestPair::from((0x0100_0000_u64, hex!("8401000000"))),
+		ETestPair::from((0xFFFF_FFFF_u64, hex!("84ffffffff"))),
+	];
+	run_encode_tests(tests);
+}
+
+#[test]
+fn encode_u128() {
+	let tests = vec![
+		ETestPair::from((0_u128, hex!("80"))),
+		ETestPair::from((0x0100_0000_0000_0000_u128, hex!("880100000000000000"))),
+		ETestPair::from((0xFFFF_FFFF_FFFF_FFFF_u128, hex!("88ffffffffffffffff"))),
 	];
 	run_encode_tests(tests);
 }
 
 #[test]
 fn encode_u256() {
-	let tests = vec![ETestPair(U256::from(0u64), vec![0x80u8]),
-					 ETestPair(U256::from(0x0100_0000u64), vec![0x84, 0x01, 0x00, 0x00, 0x00]),
-					 ETestPair(U256::from(0xffff_ffffu64),
-							   vec![0x84, 0xff, 0xff, 0xff, 0xff]),
-					 ETestPair(("8090a0b0c0d0e0f00910203040506077000000000000\
-											   000100000000000012f0").into(),
-							   vec![0xa0, 0x80, 0x90, 0xa0, 0xb0, 0xc0, 0xd0, 0xe0, 0xf0,
-									0x09, 0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x77, 0x00,
-									0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00,
-									0x00, 0x00, 0x00, 0x00, 0x12, 0xf0])];
+	let tests = vec![
+		ETestPair::from((U256::from(0_u64), hex!("80"))),
+		ETestPair::from((U256::from(0x0100_0000_u64), hex!("8401000000"))),
+		ETestPair::from((U256::from(0xffff_ffff_u64), hex!("84ffffffff"))),
+		ETestPair::from((
+			hex!("  8090a0b0c0d0e0f00910203040506077000000000000000100000000000012f0").into(),
+			hex!("a08090a0b0c0d0e0f00910203040506077000000000000000100000000000012f0"),
+		)),
+	];
 	run_encode_tests(tests);
 }
 
 #[test]
 fn encode_str() {
-	let tests = vec![ETestPair("cat", vec![0x83, b'c', b'a', b't']),
-					 ETestPair("dog", vec![0x83, b'd', b'o', b'g']),
-					 ETestPair("Marek", vec![0x85, b'M', b'a', b'r', b'e', b'k']),
-					 ETestPair("", vec![0x80]),
-					 ETestPair("Lorem ipsum dolor sit amet, consectetur adipisicing elit",
-							   vec![0xb8, 0x38, b'L', b'o', b'r', b'e', b'm', b' ', b'i',
-									b'p', b's', b'u', b'm', b' ', b'd', b'o', b'l', b'o',
-									b'r', b' ', b's', b'i', b't', b' ', b'a', b'm', b'e',
-									b't', b',', b' ', b'c', b'o', b'n', b's', b'e', b'c',
-									b't', b'e', b't', b'u', b'r', b' ', b'a', b'd', b'i',
-									b'p', b'i', b's', b'i', b'c', b'i', b'n', b'g', b' ',
-									b'e', b'l', b'i', b't'])];
+	let tests = vec![
+		ETestPair::from(("cat", vec![0x83, b'c', b'a', b't'])),
+		ETestPair::from(("dog", vec![0x83, b'd', b'o', b'g'])),
+		ETestPair::from(("Marek", vec![0x85, b'M', b'a', b'r', b'e', b'k'])),
+		ETestPair::from(("", hex!("80"))),
+		ETestPair::from((
+			"Lorem ipsum dolor sit amet, consectetur adipisicing elit",
+			vec![
+				0xb8, 0x38, b'L', b'o', b'r', b'e', b'm', b' ', b'i', b'p', b's', b'u', b'm', b' ', b'd', b'o', b'l',
+				b'o', b'r', b' ', b's', b'i', b't', b' ', b'a', b'm', b'e', b't', b',', b' ', b'c', b'o', b'n', b's',
+				b'e', b'c', b't', b'e', b't', b'u', b'r', b' ', b'a', b'd', b'i', b'p', b'i', b's', b'i', b'c', b'i',
+				b'n', b'g', b' ', b'e', b'l', b'i', b't',
+			],
+		)),
+	];
 	run_encode_tests(tests);
 }
 
 #[test]
+fn encode_into_existing_buffer() {
+	let mut buffer = BytesMut::new();
+	buffer.extend_from_slice(b"junk");
+
+	let mut split_buffer = buffer.split_off(buffer.len());
+	split_buffer.extend_from_slice(b"!");
+
+	let mut s = RlpStream::new_with_buffer(split_buffer);
+	s.append(&"cat");
+	buffer.unsplit(s.out());
+
+	buffer.extend_from_slice(b" and ");
+
+	let mut s = RlpStream::new_with_buffer(buffer);
+	s.append(&"dog");
+	let buffer = s.out();
+
+	assert_eq!(
+		&buffer[..],
+		&[b'j', b'u', b'n', b'k', b'!', 0x83, b'c', b'a', b't', b' ', b'a', b'n', b'd', b' ', 0x83, b'd', b'o', b'g']
+	);
+}
+
+#[test]
 fn encode_address() {
-	let tests = vec![
-		ETestPair(H160::from(hex!("ef2d6d194084c2de36e0dabfce45d046b37d1106")),
-				  vec![0x94, 0xef, 0x2d, 0x6d, 0x19, 0x40, 0x84, 0xc2, 0xde,
-							 0x36, 0xe0, 0xda, 0xbf, 0xce, 0x45, 0xd0, 0x46,
-							 0xb3, 0x7d, 0x11, 0x06])
-	];
+	let tests = vec![ETestPair::from((
+		H160::from(hex!("ef2d6d194084c2de36e0dabfce45d046b37d1106")),
+		hex!("94ef2d6d194084c2de36e0dabfce45d046b37d1106"),
+	))];
 	run_encode_tests(tests);
 }
 
@@ -191,10 +281,32 @@ fn encode_address() {
 #[test]
 fn encode_vector_u8() {
 	let tests = vec![
-		ETestPair(vec![], vec![0x80]),
-		ETestPair(vec![0u8], vec![0]),
-		ETestPair(vec![0x15], vec![0x15]),
-		ETestPair(vec![0x40, 0x00], vec![0x82, 0x40, 0x00]),
+		ETestPair::from((vec![], hex!("80"))),
+		ETestPair::from((vec![0u8], hex!("00"))),
+		ETestPair::from((vec![0x15], hex!("15"))),
+		ETestPair::from((vec![0x40, 0x00], hex!("824000"))),
+	];
+	run_encode_tests(tests);
+}
+
+#[test]
+fn encode_bytes() {
+	let tests = vec![
+		ETestPair::from((Bytes::from_static(&hex!("")), hex!("80"))),
+		ETestPair::from((Bytes::from_static(&hex!("00")), hex!("00"))),
+		ETestPair::from((Bytes::from_static(&hex!("15")), hex!("15"))),
+		ETestPair::from((Bytes::from_static(&hex!("4000")), hex!("824000"))),
+	];
+	run_encode_tests(tests);
+}
+
+#[test]
+fn encode_bytesmut() {
+	let tests = vec![
+		ETestPair::from((BytesMut::from(&[] as &[u8]), hex!("80"))),
+		ETestPair::from((BytesMut::from(&hex!("00") as &[u8]), hex!("00"))),
+		ETestPair::from((BytesMut::from(&hex!("15") as &[u8]), hex!("15"))),
+		ETestPair::from((BytesMut::from(&hex!("4000") as &[u8]), hex!("824000"))),
 	];
 	run_encode_tests(tests);
 }
@@ -202,38 +314,80 @@ fn encode_vector_u8() {
 #[test]
 fn encode_vector_u64() {
 	let tests = vec![
-		VETestPair(vec![], vec![0xc0]),
-		VETestPair(vec![15u64], vec![0xc1, 0x0f]),
-		VETestPair(vec![1, 2, 3, 7, 0xff], vec![0xc6, 1, 2, 3, 7, 0x81, 0xff]),
-		VETestPair(vec![0xffff_ffff, 1, 2, 3, 7, 0xff], vec![0xcb, 0x84, 0xff, 0xff, 0xff, 0xff,  1, 2, 3, 7, 0x81, 0xff]),
+		VETestPair::from((vec![], hex!("c0"))),
+		VETestPair::from((vec![15_u64], hex!("c10f"))),
+		VETestPair::from((vec![1, 2, 3, 7, 0xff], hex!("c60102030781ff"))),
+		VETestPair::from((vec![0xffff_ffff, 1, 2, 3, 7, 0xff], hex!("cb84ffffffff0102030781ff"))),
 	];
 	run_encode_tests_list(tests);
 }
 
 #[test]
 fn encode_vector_str() {
-	let tests = vec![VETestPair(vec!["cat", "dog"],
-							   vec![0xc8, 0x83, b'c', b'a', b't', 0x83, b'd', b'o', b'g'])];
+	let tests = vec![VETestPair(vec!["cat", "dog"], vec![0xc8, 0x83, b'c', b'a', b't', 0x83, b'd', b'o', b'g'])];
 	run_encode_tests_list(tests);
 }
 
-struct DTestPair<T>(T, Vec<u8>) where T: Decodable + fmt::Debug + cmp::Eq;
+#[test]
+fn clear() {
+	let mut buffer = BytesMut::new();
+	buffer.extend_from_slice(b"junk");
 
-struct VDTestPair<T>(Vec<T>, Vec<u8>) where T: Decodable + fmt::Debug + cmp::Eq;
+	let mut s = RlpStream::new_with_buffer(buffer);
+	s.append(&"parrot");
+	s.clear();
+	s.append(&"cat");
 
-fn run_decode_tests<T>(tests: Vec<DTestPair<T>>) where T: Decodable + fmt::Debug + cmp::Eq {
+	assert_eq!(&s.out()[..], &[b'j', b'u', b'n', b'k', 0x83, b'c', b'a', b't']);
+}
+
+struct DTestPair<T>(T, Vec<u8>)
+where
+	T: Decodable + fmt::Debug + cmp::Eq;
+
+struct VDTestPair<T>(Vec<T>, Vec<u8>)
+where
+	T: Decodable + fmt::Debug + cmp::Eq;
+
+fn run_decode_tests<T>(tests: Vec<DTestPair<T>>)
+where
+	T: Decodable + fmt::Debug + cmp::Eq,
+{
 	for t in &tests {
-		let res : Result<T, DecoderError> = rlp::decode(&t.1);
+		let res: Result<T, DecoderError> = rlp::decode(&t.1);
 		assert!(res.is_ok());
 		let res = res.unwrap();
 		assert_eq!(&res, &t.0);
 	}
 }
 
-fn run_decode_tests_list<T>(tests: Vec<VDTestPair<T>>) where T: Decodable + fmt::Debug + cmp::Eq {
+fn run_decode_tests_list<T>(tests: Vec<VDTestPair<T>>)
+where
+	T: Decodable + fmt::Debug + cmp::Eq,
+{
 	for t in &tests {
 		let res: Vec<T> = rlp::decode_list(&t.1);
 		assert_eq!(res, t.0);
+	}
+}
+
+impl<T, Repr> From<(T, Repr)> for DTestPair<T>
+where
+	T: Decodable + fmt::Debug + cmp::Eq,
+	Repr: Into<Vec<u8>>,
+{
+	fn from((v, repr): (T, Repr)) -> Self {
+		Self(v, repr.into())
+	}
+}
+
+impl<T, Repr> From<(Vec<T>, Repr)> for VDTestPair<T>
+where
+	T: Decodable + fmt::Debug + cmp::Eq,
+	Repr: Into<Vec<u8>>,
+{
+	fn from((v, repr): (Vec<T>, Repr)) -> Self {
+		Self(v, repr.into())
 	}
 }
 
@@ -241,10 +395,32 @@ fn run_decode_tests_list<T>(tests: Vec<VDTestPair<T>>) where T: Decodable + fmt:
 #[test]
 fn decode_vector_u8() {
 	let tests = vec![
-		DTestPair(vec![], vec![0x80]),
-		DTestPair(vec![0u8], vec![0]),
-		DTestPair(vec![0x15], vec![0x15]),
-		DTestPair(vec![0x40, 0x00], vec![0x82, 0x40, 0x00]),
+		DTestPair::from((vec![], hex!("80"))),
+		DTestPair::from((vec![0_u8], hex!("00"))),
+		DTestPair::from((vec![0x15], hex!("15"))),
+		DTestPair::from((vec![0x40, 0x00], hex!("824000"))),
+	];
+	run_decode_tests(tests);
+}
+
+#[test]
+fn decode_bytes() {
+	let tests = vec![
+		DTestPair::from((Bytes::from_static(&hex!("")), hex!("80"))),
+		DTestPair::from((Bytes::from_static(&hex!("00")), hex!("00"))),
+		DTestPair::from((Bytes::from_static(&hex!("15")), hex!("15"))),
+		DTestPair::from((Bytes::from_static(&hex!("4000")), hex!("824000"))),
+	];
+	run_decode_tests(tests);
+}
+
+#[test]
+fn decode_bytesmut() {
+	let tests = vec![
+		DTestPair::from((BytesMut::from(&hex!("") as &[u8]), hex!("80"))),
+		DTestPair::from((BytesMut::from(&hex!("00") as &[u8]), hex!("00"))),
+		DTestPair::from((BytesMut::from(&hex!("15") as &[u8]), hex!("15"))),
+		DTestPair::from((BytesMut::from(&hex!("4000") as &[u8]), hex!("824000"))),
 	];
 	run_decode_tests(tests);
 }
@@ -252,106 +428,109 @@ fn decode_vector_u8() {
 #[test]
 fn decode_untrusted_u8() {
 	let tests = vec![
-		DTestPair(0x0u8, vec![0x80]),
-		DTestPair(0x77u8, vec![0x77]),
-		DTestPair(0xccu8, vec![0x81, 0xcc]),
+		DTestPair::from((0x0_u8, hex!("80"))),
+		DTestPair::from((0x77_u8, hex!("77"))),
+		DTestPair::from((0xcc_u8, hex!("81cc"))),
 	];
 	run_decode_tests(tests);
 }
 
 #[test]
 fn decode_untrusted_u16() {
-	let tests = vec![
-		DTestPair(0x100u16, vec![0x82, 0x01, 0x00]),
-		DTestPair(0xffffu16, vec![0x82, 0xff, 0xff]),
-	];
+	let tests = vec![DTestPair::from((0x100u16, hex!("820100"))), DTestPair::from((0xffffu16, hex!("82ffff")))];
 	run_decode_tests(tests);
 }
 
 #[test]
 fn decode_untrusted_u32() {
-	let tests = vec![
-		DTestPair(0x0001_0000u32, vec![0x83, 0x01, 0x00, 0x00]),
-		DTestPair(0x00ff_ffffu32, vec![0x83, 0xff, 0xff, 0xff]),
-	];
+	let tests =
+		vec![DTestPair::from((0x0001_0000u32, hex!("83010000"))), DTestPair::from((0x00ff_ffffu32, hex!("83ffffff")))];
 	run_decode_tests(tests);
 }
 
 #[test]
 fn decode_untrusted_u64() {
 	let tests = vec![
-		DTestPair(0x0100_0000u64, vec![0x84, 0x01, 0x00, 0x00, 0x00]),
-		DTestPair(0xFFFF_FFFFu64, vec![0x84, 0xff, 0xff, 0xff, 0xff]),
+		DTestPair::from((0x0100_0000_u64, hex!("8401000000"))),
+		DTestPair::from((0xFFFF_FFFF_u64, hex!("84ffffffff"))),
+	];
+	run_decode_tests(tests);
+}
+
+#[test]
+fn decode_untrusted_u128() {
+	let tests = vec![
+		DTestPair::from((0x0100_0000_0000_0000_u128, hex!("880100000000000000"))),
+		DTestPair::from((0xFFFF_FFFF_FFFF_FFFF_u128, hex!("88ffffffffffffffff"))),
 	];
 	run_decode_tests(tests);
 }
 
 #[test]
 fn decode_untrusted_u256() {
-	let tests = vec![DTestPair(U256::from(0u64), vec![0x80u8]),
-					 DTestPair(U256::from(0x0100_0000u64), vec![0x84, 0x01, 0x00, 0x00, 0x00]),
-					 DTestPair(U256::from(0xffff_ffffu64),
-							   vec![0x84, 0xff, 0xff, 0xff, 0xff]),
-					 DTestPair(("8090a0b0c0d0e0f00910203040506077000000000000\
-											   000100000000000012f0").into(),
-							   vec![0xa0, 0x80, 0x90, 0xa0, 0xb0, 0xc0, 0xd0, 0xe0, 0xf0,
-									0x09, 0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x77, 0x00,
-									0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00,
-									0x00, 0x00, 0x00, 0x00, 0x12, 0xf0])];
+	let tests = vec![
+		DTestPair::from((U256::from(0_u64), hex!("80"))),
+		DTestPair::from((U256::from(0x0100_0000_u64), hex!("8401000000"))),
+		DTestPair::from((U256::from(0xffff_ffff_u64), hex!("84ffffffff"))),
+		DTestPair::from((
+			hex!("  8090a0b0c0d0e0f00910203040506077000000000000000100000000000012f0").into(),
+			hex!("a08090a0b0c0d0e0f00910203040506077000000000000000100000000000012f0"),
+		)),
+	];
 	run_decode_tests(tests);
 }
 
 #[test]
 fn decode_untrusted_str() {
-	let tests = vec![DTestPair("cat".to_owned(), vec![0x83, b'c', b'a', b't']),
-					 DTestPair("dog".to_owned(), vec![0x83, b'd', b'o', b'g']),
-					 DTestPair("Marek".to_owned(),
-							   vec![0x85, b'M', b'a', b'r', b'e', b'k']),
-					 DTestPair("".to_owned(), vec![0x80]),
-					 DTestPair("Lorem ipsum dolor sit amet, consectetur adipisicing elit"
-								   .to_owned(),
-							   vec![0xb8, 0x38, b'L', b'o', b'r', b'e', b'm', b' ', b'i',
-									b'p', b's', b'u', b'm', b' ', b'd', b'o', b'l', b'o',
-									b'r', b' ', b's', b'i', b't', b' ', b'a', b'm', b'e',
-									b't', b',', b' ', b'c', b'o', b'n', b's', b'e', b'c',
-									b't', b'e', b't', b'u', b'r', b' ', b'a', b'd', b'i',
-									b'p', b'i', b's', b'i', b'c', b'i', b'n', b'g', b' ',
-									b'e', b'l', b'i', b't'])];
+	let tests = vec![
+		DTestPair::from(("cat".to_owned(), vec![0x83, b'c', b'a', b't'])),
+		DTestPair::from(("dog".to_owned(), vec![0x83, b'd', b'o', b'g'])),
+		DTestPair::from(("Marek".to_owned(), vec![0x85, b'M', b'a', b'r', b'e', b'k'])),
+		DTestPair::from(("".to_owned(), hex!("80"))),
+		DTestPair::from((
+			"Lorem ipsum dolor sit amet, consectetur adipisicing elit".to_owned(),
+			vec![
+				0xb8, 0x38, b'L', b'o', b'r', b'e', b'm', b' ', b'i', b'p', b's', b'u', b'm', b' ', b'd', b'o', b'l',
+				b'o', b'r', b' ', b's', b'i', b't', b' ', b'a', b'm', b'e', b't', b',', b' ', b'c', b'o', b'n', b's',
+				b'e', b'c', b't', b'e', b't', b'u', b'r', b' ', b'a', b'd', b'i', b'p', b'i', b's', b'i', b'c', b'i',
+				b'n', b'g', b' ', b'e', b'l', b'i', b't',
+			],
+		)),
+	];
 	run_decode_tests(tests);
 }
 
 #[test]
 fn decode_untrusted_address() {
-	let tests = vec![
-		DTestPair(H160::from(hex!("ef2d6d194084c2de36e0dabfce45d046b37d1106")),
-				  vec![0x94, 0xef, 0x2d, 0x6d, 0x19, 0x40, 0x84, 0xc2, 0xde,
-							 0x36, 0xe0, 0xda, 0xbf, 0xce, 0x45, 0xd0, 0x46,
-							 0xb3, 0x7d, 0x11, 0x06])
-	];
+	let tests = vec![DTestPair::from((
+		H160::from(hex!("ef2d6d194084c2de36e0dabfce45d046b37d1106")),
+		hex!("94ef2d6d194084c2de36e0dabfce45d046b37d1106"),
+	))];
 	run_decode_tests(tests);
 }
 
 #[test]
 fn decode_untrusted_vector_u64() {
 	let tests = vec![
-		VDTestPair(vec![], vec![0xc0]),
-		VDTestPair(vec![15u64], vec![0xc1, 0x0f]),
-		VDTestPair(vec![1, 2, 3, 7, 0xff], vec![0xc6, 1, 2, 3, 7, 0x81, 0xff]),
-		VDTestPair(vec![0xffff_ffff, 1, 2, 3, 7, 0xff], vec![0xcb, 0x84, 0xff, 0xff, 0xff, 0xff,  1, 2, 3, 7, 0x81, 0xff]),
+		VDTestPair::from((vec![], hex!("c0"))),
+		VDTestPair::from((vec![15_u64], hex!("c10f"))),
+		VDTestPair::from((vec![1, 2, 3, 7, 0xff], hex!("c60102030781ff"))),
+		VDTestPair::from((vec![0xffff_ffff, 1, 2, 3, 7, 0xff], hex!("cb84ffffffff0102030781ff"))),
 	];
 	run_decode_tests_list(tests);
 }
 
 #[test]
 fn decode_untrusted_vector_str() {
-	let tests = vec![VDTestPair(vec!["cat".to_owned(), "dog".to_owned()],
-							   vec![0xc8, 0x83, b'c', b'a', b't', 0x83, b'd', b'o', b'g'])];
+	let tests = vec![VDTestPair(
+		vec!["cat".to_owned(), "dog".to_owned()],
+		vec![0xc8, 0x83, b'c', b'a', b't', 0x83, b'd', b'o', b'g'],
+	)];
 	run_decode_tests_list(tests);
 }
 
 #[test]
-fn test_rlp_data_length_check()
-{
+fn test_rlp_data_length_check() {
 	let data = vec![0x84, b'c', b'a', b't'];
 	let rlp = Rlp::new(&data);
 
@@ -360,9 +539,8 @@ fn test_rlp_data_length_check()
 }
 
 #[test]
-fn test_rlp_long_data_length_check()
-{
-	let mut data: Vec<u8> = vec![0xb8, 255];
+fn test_rlp_long_data_length_check() {
+	let mut data = hex!("b8ff").to_vec();
 	for _ in 0..253 {
 		data.push(b'c');
 	}
@@ -374,9 +552,8 @@ fn test_rlp_long_data_length_check()
 }
 
 #[test]
-fn test_the_exact_long_string()
-{
-	let mut data: Vec<u8> = vec![0xb8, 255];
+fn test_the_exact_long_string() {
+	let mut data = hex!("b8ff").to_vec();
 	for _ in 0..255 {
 		data.push(b'c');
 	}
@@ -388,9 +565,8 @@ fn test_the_exact_long_string()
 }
 
 #[test]
-fn test_rlp_2bytes_data_length_check()
-{
-	let mut data: Vec<u8> = vec![0xb9, 2, 255]; // 512+255
+fn test_rlp_2bytes_data_length_check() {
+	let mut data = hex!("b902ff").to_vec(); // 512+255
 	for _ in 0..700 {
 		data.push(b'c');
 	}
@@ -405,13 +581,13 @@ fn test_rlp_2bytes_data_length_check()
 fn test_rlp_nested_empty_list_encode() {
 	let mut stream = RlpStream::new_list(2);
 	stream.append_list(&(Vec::new() as Vec<u32>));
-	stream.append(&40u32);
-	assert_eq!(stream.drain()[..], [0xc2u8, 0xc0u8, 40u8][..]);
+	stream.append(&0x28_u32);
+	assert_eq!(stream.out()[..], hex!("c2c028")[..]);
 }
 
 #[test]
 fn test_rlp_list_length_overflow() {
-	let data: Vec<u8> = vec![0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00];
+	let data = hex!("ffffffffffffffffff000000");
 	let rlp = Rlp::new(&data);
 	let as_val: Result<String, DecoderError> = rlp.val_at(0);
 	assert_eq!(Err(DecoderError::RlpIsTooShort), as_val);
@@ -419,11 +595,11 @@ fn test_rlp_list_length_overflow() {
 
 #[test]
 fn test_rlp_stream_size_limit() {
-	for limit in 40 .. 270 {
+	for limit in 40..270 {
 		let item = [0u8; 1];
 		let mut stream = RlpStream::new();
 		while stream.append_raw_checked(&item, 1, limit) {}
-		assert_eq!(stream.drain().len(), limit);
+		assert_eq!(stream.out().len(), limit);
 	}
 }
 
@@ -443,8 +619,17 @@ fn test_rlp_is_int() {
 	for b in 0xb8..0xc0 {
 		let data: Vec<u8> = vec![b];
 		let rlp = Rlp::new(&data);
-		assert_eq!(rlp.is_int(), false);
+		assert!(!rlp.is_int());
 	}
+}
+
+#[test]
+fn test_bool_same_as_int() {
+	assert_eq!(rlp::encode(&false), rlp::encode(&0x00u8));
+	assert_eq!(rlp::encode(&true), rlp::encode(&0x01u8));
+	let two = rlp::encode(&0x02u8);
+	let invalid: Result<bool, _> = rlp::decode(&two);
+	invalid.unwrap_err();
 }
 
 // test described in
@@ -519,9 +704,7 @@ fn test_nested_list_roundtrip() {
 
 	impl<T: Encodable> Encodable for Nest<T> {
 		fn rlp_append(&self, s: &mut RlpStream) {
-			s.begin_unbounded_list()
-				.append_list(&self.0)
-				.finalize_unbounded_list();
+			s.begin_unbounded_list().append_list(&self.0).finalize_unbounded_list();
 		}
 	}
 
@@ -530,7 +713,6 @@ fn test_nested_list_roundtrip() {
 			Ok(Nest(rlp.list_at(0)?))
 		}
 	}
-
 
 	let items = (0..4).map(|i| Inner(i, i + 1)).collect();
 	let nest = Nest(items);

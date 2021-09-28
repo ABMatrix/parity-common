@@ -1,3 +1,11 @@
+// Copyright 2020 Parity Technologies
+//
+// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
+// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
+// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
+// option. This file may not be copied, modified, or distributed
+// except according to those terms.
+
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
@@ -49,7 +57,7 @@ fn div_mod_word(hi: u64, lo: u64, y: u64) -> (u64, u64) {
 }
 
 fuzz_target!(|data: &[u8]| {
-    if data.len() == 24 {
+	if data.len() == 24 {
 		let mut buf = [0u8; 8];
 		buf.copy_from_slice(&data[..8]);
 		let x = u64::from_ne_bytes(buf);
@@ -60,5 +68,5 @@ fuzz_target!(|data: &[u8]| {
 		if x < z {
 			assert_eq!(div_mod_word(x, y, z), div_mod_word_u128(x, y, z));
 		}
-    }
+	}
 });

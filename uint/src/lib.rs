@@ -1,4 +1,4 @@
-// Copyright 2015-2017 Parity Technologies
+// Copyright 2020 Parity Technologies
 //
 // Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
 // http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -19,11 +19,19 @@ pub use byteorder;
 pub use core as core_;
 
 #[doc(hidden)]
-pub use rustc_hex;
+pub use hex;
 
-#[cfg(feature="quickcheck")]
+#[cfg(feature = "quickcheck")]
 #[doc(hidden)]
-pub use quickcheck;
+pub use qc;
+
+#[cfg(feature = "quickcheck")]
+#[doc(hidden)]
+pub use rand07;
+
+#[cfg(feature = "arbitrary")]
+#[doc(hidden)]
+pub use arbitrary;
 
 #[doc(hidden)]
 pub use static_assertions;
@@ -31,5 +39,6 @@ pub use static_assertions;
 pub use crunchy::unroll;
 
 #[macro_use]
+#[rustfmt::skip]
 mod uint;
 pub use crate::uint::*;

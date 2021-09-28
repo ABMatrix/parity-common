@@ -1,4 +1,4 @@
-// Copyright 2015-2018 Parity Technologies
+// Copyright 2020 Parity Technologies
 //
 // Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
 // http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -11,7 +11,7 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
 #[doc(hidden)]
-pub extern crate parity_scale_codec as codec;
+pub use parity_scale_codec as codec;
 
 /// Add Parity Codec serialization support to an integer created by `construct_uint!`.
 #[macro_export]
@@ -28,14 +28,17 @@ macro_rules! impl_uint_codec {
 		impl $crate::codec::EncodeLike for $name {}
 
 		impl $crate::codec::Decode for $name {
-			fn decode<I: $crate::codec::Input>(input: &mut I)
-				-> core::result::Result<Self, $crate::codec::Error>
-			{
-				<[u8; $len * 8] as $crate::codec::Decode>::decode(input)
-					.map(|b| $name::from_little_endian(&b))
+			fn decode<I: $crate::codec::Input>(input: &mut I) -> core::result::Result<Self, $crate::codec::Error> {
+				<[u8; $len * 8] as $crate::codec::Decode>::decode(input).map(|b| $name::from_little_endian(&b))
 			}
 		}
-	}
+
+		impl $crate::codec::MaxEncodedLen for $name {
+			fn max_encoded_len() -> usize {
+				::core::mem::size_of::<$name>()
+			}
+		}
+	};
 }
 
 /// Add Parity Codec serialization support to a fixed-sized hash type created by `construct_fixed_hash!`.
@@ -51,11 +54,15 @@ macro_rules! impl_fixed_hash_codec {
 		impl $crate::codec::EncodeLike for $name {}
 
 		impl $crate::codec::Decode for $name {
-			fn decode<I: $crate::codec::Input>(input: &mut I)
-				-> core::result::Result<Self, $crate::codec::Error>
-			{
+			fn decode<I: $crate::codec::Input>(input: &mut I) -> core::result::Result<Self, $crate::codec::Error> {
 				<[u8; $len] as $crate::codec::Decode>::decode(input).map($name)
 			}
 		}
-	}
+
+		impl $crate::codec::MaxEncodedLen for $name {
+			fn max_encoded_len() -> usize {
+				::core::mem::size_of::<$name>()
+			}
+		}
+	};
 }

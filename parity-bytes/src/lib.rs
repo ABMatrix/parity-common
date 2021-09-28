@@ -1,18 +1,10 @@
-// Copyright 2015-2018 Parity Technologies (UK) Ltd.
-// This file is part of Parity.
-
-// Parity is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-
-// Parity is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-// GNU General Public License for more details.
-
-// You should have received a copy of the GNU General Public License
-// along with Parity.  If not, see <http://www.gnu.org/licenses/>.
+// Copyright 2020 Parity Technologies
+//
+// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
+// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
+// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
+// option. This file may not be copied, modified, or distributed
+// except according to those terms.
 
 //! General bytes-related utilities.
 //!
@@ -75,7 +67,7 @@ pub enum BytesRef<'a> {
 	/// This is a reference to a vector
 	Flexible(&'a mut Bytes),
 	/// This is a reference to a slice
-	Fixed(&'a mut [u8])
+	Fixed(&'a mut [u8]),
 }
 
 impl<'a> BytesRef<'a> {
@@ -97,7 +89,7 @@ impl<'a> BytesRef<'a> {
 				data[offset..(max + offset)].copy_from_slice(&input[..max]);
 				max
 			},
-			_ => 0
+			_ => 0,
 		}
 	}
 }
@@ -127,9 +119,9 @@ pub type Bytes = Vec<u8>;
 
 #[cfg(test)]
 mod tests {
+	use super::BytesRef;
 	#[cfg(not(feature = "std"))]
 	use alloc::vec;
-	use super::BytesRef;
 
 	#[test]
 	fn should_write_bytes_to_fixed_bytesref() {

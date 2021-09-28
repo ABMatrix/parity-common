@@ -1,4 +1,4 @@
-// Copyright 2015-2017 Parity Technologies
+// Copyright 2020 Parity Technologies
 //
 // Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
 // http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -8,6 +8,7 @@
 
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
+use bytes::{BufMut, BytesMut};
 use core::borrow::Borrow;
 
 use crate::traits::Encodable;
@@ -21,18 +22,15 @@ struct ListInfo {
 
 impl ListInfo {
 	fn new(position: usize, max: Option<usize>) -> ListInfo {
-		ListInfo {
-			position,
-			current: 0,
-			max,
-		}
+		ListInfo { position, current: 0, max }
 	}
 }
 
 /// Appendable rlp encoder.
 pub struct RlpStream {
 	unfinished_lists: Vec<ListInfo>,
-	buffer: Vec<u8>,
+	start_pos: usize,
+	buffer: BytesMut,
 	finished_list: bool,
 }
 
@@ -45,47 +43,48 @@ impl Default for RlpStream {
 impl RlpStream {
 	/// Initializes instance of empty `Stream`.
 	pub fn new() -> Self {
-		RlpStream {
-			unfinished_lists: Vec::with_capacity(16),
-			buffer: Vec::with_capacity(1024),
-			finished_list: false,
-		}
+		Self::new_with_buffer(BytesMut::with_capacity(1024))
 	}
 
 	/// Initializes the `Stream` as a list.
 	pub fn new_list(len: usize) -> Self {
-		let mut stream = RlpStream::new();
+		Self::new_list_with_buffer(BytesMut::with_capacity(1024), len)
+	}
+
+	/// Initializes instance of empty `Stream`.
+	pub fn new_with_buffer(buffer: BytesMut) -> Self {
+		RlpStream { unfinished_lists: Vec::with_capacity(16), start_pos: buffer.len(), buffer, finished_list: false }
+	}
+
+	/// Initializes the `Stream` as a list.
+	pub fn new_list_with_buffer(buffer: BytesMut, len: usize) -> Self {
+		let mut stream = RlpStream::new_with_buffer(buffer);
 		stream.begin_list(len);
 		stream
 	}
 
+	fn total_written(&self) -> usize {
+		self.buffer.len() - self.start_pos
+	}
+
 	/// Apends null to the end of stream, chainable.
 	///
-	/// ```rust
-	/// extern crate rlp;
-	/// use rlp::*;
-	///
-	/// fn main () {
-	/// 	let mut stream = RlpStream::new_list(2);
-	/// 	stream.append_empty_data().append_empty_data();
-	/// 	let out = stream.out();
-	/// 	assert_eq!(out, vec![0xc2, 0x80, 0x80]);
-	/// }
+	/// ```
+	/// use rlp::RlpStream;
+	/// let mut stream = RlpStream::new_list(2);
+	/// stream.append_empty_data().append_empty_data();
+	/// let out = stream.out();
+	/// assert_eq!(out, vec![0xc2, 0x80, 0x80]);
 	/// ```
 	pub fn append_empty_data(&mut self) -> &mut Self {
 		// self push raw item
-		self.buffer.push(0x80);
+		self.buffer.put_u8(0x80);
 
 		// try to finish and prepend the length
 		self.note_appended(1);
 
 		// return chainable self
 		self
-	}
-
-	/// Drain the object and return the underlying ElasticArray. Panics if it is not finished.
-	pub fn drain(self) -> Vec<u8> {
-		self.out()
 	}
 
 	/// Appends raw (pre-serialised) RLP data. Use with caution. Chainable.
@@ -102,18 +101,17 @@ impl RlpStream {
 
 	/// Appends value to the end of stream, chainable.
 	///
-	/// ```rust
-	/// extern crate rlp;
-	/// use rlp::*;
-	///
-	/// fn main () {
-	/// 	let mut stream = RlpStream::new_list(2);
-	/// 	stream.append(&"cat").append(&"dog");
-	/// 	let out = stream.out();
-	/// 	assert_eq!(out, vec![0xc8, 0x83, b'c', b'a', b't', 0x83, b'd', b'o', b'g']);
-	/// }
 	/// ```
-	pub fn append<E>(&mut self, value: &E) -> &mut Self where E: Encodable {
+	/// use rlp::RlpStream;
+	/// let mut stream = RlpStream::new_list(2);
+	/// stream.append(&"cat").append(&"dog");
+	/// let out = stream.out();
+	/// assert_eq!(out, vec![0xc8, 0x83, b'c', b'a', b't', 0x83, b'd', b'o', b'g']);
+	/// ```
+	pub fn append<E>(&mut self, value: &E) -> &mut Self
+	where
+		E: Encodable,
+	{
 		self.finished_list = false;
 		value.rlp_append(self);
 		if !self.finished_list {
@@ -124,19 +122,16 @@ impl RlpStream {
 
 	/// Appends iterator to the end of stream, chainable.
 	///
-	/// ```rust
-	/// extern crate rlp;
-	/// use rlp::*;
-	///
-	/// fn main () {
-	/// 	let mut stream = RlpStream::new_list(2);
-	/// 	stream.append(&"cat").append_iter("dog".as_bytes().iter().cloned());
-	/// 	let out = stream.out();
-	/// 	assert_eq!(out, vec![0xc8, 0x83, b'c', b'a', b't', 0x83, b'd', b'o', b'g']);
-	/// }
+	/// ```
+	/// use rlp::RlpStream;
+	/// let mut stream = RlpStream::new_list(2);
+	/// stream.append(&"cat").append_iter("dog".as_bytes().iter().cloned());
+	/// let out = stream.out();
+	/// assert_eq!(out, vec![0xc8, 0x83, b'c', b'a', b't', 0x83, b'd', b'o', b'g']);
 	/// ```
 	pub fn append_iter<I>(&mut self, value: I) -> &mut Self
-	where I: IntoIterator<Item = u8>,
+	where
+		I: IntoIterator<Item = u8>,
 	{
 		self.finished_list = false;
 		self.encoder().encode_iter(value);
@@ -147,7 +142,11 @@ impl RlpStream {
 	}
 
 	/// Appends list of values to the end of stream, chainable.
-	pub fn append_list<E, K>(&mut self, values: &[K]) -> &mut Self where E: Encodable, K: Borrow<E> {
+	pub fn append_list<E, K>(&mut self, values: &[K]) -> &mut Self
+	where
+		E: Encodable,
+		K: Borrow<E>,
+	{
 		self.begin_list(values.len());
 		for value in values {
 			self.append(value.borrow());
@@ -157,40 +156,39 @@ impl RlpStream {
 
 	/// Appends value to the end of stream, but do not count it as an appended item.
 	/// It's useful for wrapper types
-	pub fn append_internal<E>(&mut self, value: &E) -> &mut Self where E: Encodable {
+	pub fn append_internal<E>(&mut self, value: &E) -> &mut Self
+	where
+		E: Encodable,
+	{
 		value.rlp_append(self);
 		self
 	}
 
 	/// Declare appending the list of given size, chainable.
 	///
-	/// ```rust
-	/// extern crate rlp;
-	/// use rlp::*;
-	///
-	/// fn main () {
-	/// 	let mut stream = RlpStream::new_list(2);
-	/// 	stream.begin_list(2).append(&"cat").append(&"dog");
-	/// 	stream.append(&"");
-	/// 	let out = stream.out();
-	/// 	assert_eq!(out, vec![0xca, 0xc8, 0x83, b'c', b'a', b't', 0x83, b'd', b'o', b'g', 0x80]);
-	/// }
+	/// ```
+	/// use rlp::RlpStream;
+	/// let mut stream = RlpStream::new_list(2);
+	/// stream.begin_list(2).append(&"cat").append(&"dog");
+	/// stream.append(&"");
+	/// let out = stream.out();
+	/// assert_eq!(out, vec![0xca, 0xc8, 0x83, b'c', b'a', b't', 0x83, b'd', b'o', b'g', 0x80]);
 	/// ```
 	pub fn begin_list(&mut self, len: usize) -> &mut RlpStream {
 		self.finished_list = false;
 		match len {
 			0 => {
 				// we may finish, if the appended list len is equal 0
-				self.buffer.push(0xc0u8);
+				self.buffer.put_u8(0xc0u8);
 				self.note_appended(1);
 				self.finished_list = true;
 			},
 			_ => {
 				// payload is longer than 1 byte only for lists > 55 bytes
 				// by pushing always this 1 byte we may avoid unnecessary shift of data
-				self.buffer.push(0);
+				self.buffer.put_u8(0);
 
-				let position = self.buffer.len();
+				let position = self.total_written();
 				self.unfinished_lists.push(ListInfo::new(position, Some(len)));
 			},
 		}
@@ -204,8 +202,8 @@ impl RlpStream {
 		self.finished_list = false;
 		// payload is longer than 1 byte only for lists > 55 bytes
 		// by pushing always this 1 byte we may avoid unnecessary shift of data
-		self.buffer.push(0);
-		let position = self.buffer.len();
+		self.buffer.put_u8(0);
+		let position = self.total_written();
 		self.unfinished_lists.push(ListInfo::new(position, None));
 		// return chainable self
 		self
@@ -214,7 +212,7 @@ impl RlpStream {
 	/// Appends raw (pre-serialised) RLP data. Checks for size overflow.
 	pub fn append_raw_checked(&mut self, bytes: &[u8], item_count: usize, max_size: usize) -> bool {
 		if self.estimate_size(bytes.len()) > max_size {
-			return false;
+			return false
 		}
 		self.append_raw(bytes, item_count);
 		true
@@ -222,7 +220,7 @@ impl RlpStream {
 
 	/// Calculate total RLP size for appended payload.
 	pub fn estimate_size(&self, add: usize) -> usize {
-		let total_size = self.buffer.len() + add;
+		let total_size = self.total_written() + add;
 		let mut base_size = total_size;
 		for list in &self.unfinished_lists[..] {
 			let len = total_size - list.position;
@@ -246,21 +244,18 @@ impl RlpStream {
 
 	/// Clear the output stream so far.
 	///
-	/// ```rust
-	/// extern crate rlp;
-	/// use rlp::*;
-	///
-	/// fn main () {
-	/// 	let mut stream = RlpStream::new_list(3);
-	/// 	stream.append(&"cat");
-	/// 	stream.clear();
-	/// 	stream.append(&"dog");
-	/// 	let out = stream.out();
-	/// 	assert_eq!(out, vec![0x83, b'd', b'o', b'g']);
-	/// }
+	/// ```
+	/// use rlp::RlpStream;
+	/// let mut stream = RlpStream::new_list(3);
+	/// stream.append(&"cat");
+	/// stream.clear();
+	/// stream.append(&"dog");
+	/// let out = stream.out();
+	/// assert_eq!(out, vec![0x83, b'd', b'o', b'g']);
+	/// ```
 	pub fn clear(&mut self) {
 		// clear bytes
-		self.buffer.clear();
+		self.buffer.truncate(self.start_pos);
 
 		// clear lists
 		self.unfinished_lists.clear();
@@ -268,19 +263,16 @@ impl RlpStream {
 
 	/// Returns true if stream doesnt expect any more items.
 	///
-	/// ```rust
-	/// extern crate rlp;
-	/// use rlp::*;
-	///
-	/// fn main () {
-	/// 	let mut stream = RlpStream::new_list(2);
-	/// 	stream.append(&"cat");
-	/// 	assert_eq!(stream.is_finished(), false);
-	/// 	stream.append(&"dog");
-	/// 	assert_eq!(stream.is_finished(), true);
-	/// 	let out = stream.out();
-	/// 	assert_eq!(out, vec![0xc8, 0x83, b'c', b'a', b't', 0x83, b'd', b'o', b'g']);
-	/// }
+	/// ```
+	/// use rlp::RlpStream;
+	/// let mut stream = RlpStream::new_list(2);
+	/// stream.append(&"cat");
+	/// assert_eq!(stream.is_finished(), false);
+	/// stream.append(&"dog");
+	/// assert_eq!(stream.is_finished(), true);
+	/// let out = stream.out();
+	/// assert_eq!(out, vec![0xc8, 0x83, b'c', b'a', b't', 0x83, b'd', b'o', b'g']);
+	/// ```
 	pub fn is_finished(&self) -> bool {
 		self.unfinished_lists.is_empty()
 	}
@@ -294,7 +286,7 @@ impl RlpStream {
 	/// Streams out encoded bytes.
 	///
 	/// panic! if stream is not finished.
-	pub fn out(self) -> Vec<u8> {
+	pub fn out(self) -> BytesMut {
 		if self.is_finished() {
 			self.buffer
 		} else {
@@ -305,7 +297,7 @@ impl RlpStream {
 	/// Try to finish lists
 	fn note_appended(&mut self, inserted_items: usize) {
 		if self.unfinished_lists.is_empty() {
-			return;
+			return
 		}
 
 		let back = self.unfinished_lists.len() - 1;
@@ -314,15 +306,15 @@ impl RlpStream {
 			Some(ref mut x) => {
 				x.current += inserted_items;
 				match x.max {
-					Some(ref max) if x.current > *max => panic!("You cannot append more items then you expect!"),
+					Some(ref max) if x.current > *max => panic!("You cannot append more items than you expect!"),
 					Some(ref max) => x.current == *max,
 					_ => false,
 				}
-			}
+			},
 		};
 		if should_finish {
 			let x = self.unfinished_lists.pop().unwrap();
-			let len = self.buffer.len() - x.position;
+			let len = self.total_written() - x.position;
 			self.encoder().insert_list_payload(len, x.position);
 			self.note_appended(1);
 		}
@@ -330,7 +322,7 @@ impl RlpStream {
 	}
 
 	pub fn encoder(&mut self) -> BasicEncoder {
-		BasicEncoder::new(self)
+		BasicEncoder::new(self, self.start_pos)
 	}
 
 	/// Finalize current unbounded list. Panics if no unbounded list has been opened.
@@ -339,29 +331,25 @@ impl RlpStream {
 		if list.max.is_some() {
 			panic!("List type mismatch.");
 		}
-		let len = self.buffer.len() - list.position;
+		let len = self.total_written() - list.position;
 		self.encoder().insert_list_payload(len, list.position);
 		self.note_appended(1);
 		self.finished_list = true;
 	}
-
-	/// Finalize current unbounded list. Panics if no unbounded list has been opened.
-	#[deprecated(since = "0.4.3", note = "use finalize_unbounded_list instead")]
-	pub fn complete_unbounded_list(&mut self) {
-		self.finalize_unbounded_list();
-	}
-
 }
 
 pub struct BasicEncoder<'a> {
-	buffer: &'a mut Vec<u8>,
+	buffer: &'a mut BytesMut,
+	start_pos: usize,
 }
 
 impl<'a> BasicEncoder<'a> {
-	fn new(stream: &'a mut RlpStream) -> Self {
-		BasicEncoder {
-			buffer: &mut stream.buffer
-		}
+	fn new(stream: &'a mut RlpStream, start_pos: usize) -> Self {
+		BasicEncoder { buffer: &mut stream.buffer, start_pos }
+	}
+
+	fn total_written(&self) -> usize {
+		self.buffer.len() - self.start_pos
 	}
 
 	fn insert_size(&mut self, size: usize, position: usize) -> u8 {
@@ -369,10 +357,10 @@ impl<'a> BasicEncoder<'a> {
 		let leading_empty_bytes = size.leading_zeros() as usize / 8;
 		let size_bytes = 4 - leading_empty_bytes as u8;
 		let buffer: [u8; 4] = size.to_be_bytes();
-		assert!(position <= self.buffer.len());
+		assert!(position <= self.total_written());
 
 		self.buffer.extend_from_slice(&buffer[leading_empty_bytes..]);
-		self.buffer[position..].rotate_right(size_bytes as usize);
+		self.buffer[self.start_pos + position..].rotate_right(size_bytes as usize);
 		size_bytes as u8
 	}
 
@@ -381,12 +369,12 @@ impl<'a> BasicEncoder<'a> {
 		// 1 byte was already reserved for payload earlier
 		match len {
 			0..=55 => {
-				self.buffer[pos - 1] = 0xc0u8 + len as u8;
+				self.buffer[self.start_pos + pos - 1] = 0xc0u8 + len as u8;
 			},
 			_ => {
 				let inserted_bytes = self.insert_size(len, pos);
-				self.buffer[pos - 1] = 0xf7u8 + inserted_bytes;
-			}
+				self.buffer[self.start_pos + pos - 1] = 0xf7u8 + inserted_bytes;
+			},
 		};
 	}
 
@@ -396,39 +384,40 @@ impl<'a> BasicEncoder<'a> {
 
 	/// Pushes encoded value to the end of buffer
 	pub fn encode_iter<I>(&mut self, value: I)
-	where I: IntoIterator<Item=u8>,
+	where
+		I: IntoIterator<Item = u8>,
 	{
 		let mut value = value.into_iter();
 		let len = match value.size_hint() {
 			(lower, Some(upper)) if lower == upper => lower,
 			_ => {
 				let value = value.collect::<Vec<_>>();
-				return self.encode_iter(value);
-			}
+				return self.encode_iter(value)
+			},
 		};
 		match len {
 			// just 0
-			0 => self.buffer.push(0x80u8),
+			0 => self.buffer.put_u8(0x80u8),
 			len @ 1..=55 => {
 				let first = value.next().expect("iterator length is higher than 1");
 				if len == 1 && first < 0x80 {
 					// byte is its own encoding if < 0x80
-					self.buffer.push(first);
+					self.buffer.put_u8(first);
 				} else {
 					// (prefix + length), followed by the string
-					self.buffer.push(0x80u8 + len as u8);
-					self.buffer.push(first);
+					self.buffer.put_u8(0x80u8 + len as u8);
+					self.buffer.put_u8(first);
 					self.buffer.extend(value);
 				}
-			}
+			},
 			// (prefix + length of length), followed by the length, followd by the string
 			len => {
-				self.buffer.push(0);
-				let position = self.buffer.len();
+				self.buffer.put_u8(0);
+				let position = self.total_written();
 				let inserted_bytes = self.insert_size(len, position);
-				self.buffer[position - 1] = 0xb7 + inserted_bytes;
+				self.buffer[self.start_pos + position - 1] = 0xb7 + inserted_bytes;
 				self.buffer.extend(value);
-			}
+			},
 		}
 	}
 }

@@ -1,4 +1,4 @@
-// Copyright 2015-2017 Parity Technologies
+// Copyright 2020 Parity Technologies
 //
 // Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
 // http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -7,20 +7,25 @@
 // except according to those terms.
 
 #[cfg(not(feature = "std"))]
-use alloc::{borrow::ToOwned, vec::Vec, string::String};
-use core::{mem, str};
-use core::iter::{once, empty};
+use alloc::{borrow::ToOwned, boxed::Box, string::String, vec::Vec};
+use bytes::{Bytes, BytesMut};
+use core::{
+	iter::{empty, once},
+	mem, str,
+};
 
-use crate::error::DecoderError;
-use crate::rlpin::Rlp;
-use crate::stream::RlpStream;
-use crate::traits::{Encodable, Decodable};
+use crate::{
+	error::DecoderError,
+	rlpin::Rlp,
+	stream::RlpStream,
+	traits::{Decodable, Encodable},
+};
 
 pub fn decode_usize(bytes: &[u8]) -> Result<usize, DecoderError> {
 	match bytes.len() {
 		l if l <= mem::size_of::<usize>() => {
 			if bytes[0] == 0 {
-				return Err(DecoderError::RlpInvalidIndirection);
+				return Err(DecoderError::RlpInvalidIndirection)
 			}
 			let mut res = 0usize;
 			for (i, byte) in bytes.iter().enumerate().take(l) {
@@ -28,26 +33,38 @@ pub fn decode_usize(bytes: &[u8]) -> Result<usize, DecoderError> {
 				res += (*byte as usize) << shift;
 			}
 			Ok(res)
-		}
+		},
 		_ => Err(DecoderError::RlpIsTooBig),
+	}
+}
+
+impl<T: Encodable + ?Sized> Encodable for Box<T> {
+	fn rlp_append(&self, s: &mut RlpStream) {
+		Encodable::rlp_append(&**self, s)
+	}
+}
+
+impl<T: Decodable> Decodable for Box<T> {
+	fn decode(rlp: &Rlp) -> Result<Self, DecoderError> {
+		T::decode(rlp).map(Box::new)
 	}
 }
 
 impl Encodable for bool {
 	fn rlp_append(&self, s: &mut RlpStream) {
-		s.encoder().encode_iter(once(if *self { 1u8 } else { 0 }));
+		let as_uint = u8::from(*self);
+		Encodable::rlp_append(&as_uint, s);
 	}
 }
 
 impl Decodable for bool {
 	fn decode(rlp: &Rlp) -> Result<Self, DecoderError> {
-		rlp.decoder().decode_value(|bytes| {
-			match bytes.len() {
-				0 => Ok(false),
-				1 => Ok(bytes[0] != 0),
-				_ => Err(DecoderError::RlpIsTooBig),
-			}
-		})
+		let as_uint = <u8 as Decodable>::decode(rlp)?;
+		match as_uint {
+			0 => Ok(false),
+			1 => Ok(true),
+			_ => Err(DecoderError::Custom("invalid boolean value")),
+		}
 	}
 }
 
@@ -65,13 +82,38 @@ impl Encodable for Vec<u8> {
 
 impl Decodable for Vec<u8> {
 	fn decode(rlp: &Rlp) -> Result<Self, DecoderError> {
-		rlp.decoder().decode_value(|bytes| {
-			Ok(bytes.to_vec())
-		})
+		rlp.decoder().decode_value(|bytes| Ok(bytes.to_vec()))
 	}
 }
 
-impl<T> Encodable for Option<T> where T: Encodable {
+impl Encodable for Bytes {
+	fn rlp_append(&self, s: &mut RlpStream) {
+		s.encoder().encode_value(self);
+	}
+}
+
+impl Decodable for Bytes {
+	fn decode(rlp: &Rlp) -> Result<Self, DecoderError> {
+		rlp.decoder().decode_value(|bytes| Ok(Bytes::copy_from_slice(bytes)))
+	}
+}
+
+impl Encodable for BytesMut {
+	fn rlp_append(&self, s: &mut RlpStream) {
+		s.encoder().encode_value(self);
+	}
+}
+
+impl Decodable for BytesMut {
+	fn decode(rlp: &Rlp) -> Result<Self, DecoderError> {
+		rlp.decoder().decode_value(|bytes| Ok(bytes.into()))
+	}
+}
+
+impl<T> Encodable for Option<T>
+where
+	T: Encodable,
+{
 	fn rlp_append(&self, s: &mut RlpStream) {
 		match *self {
 			None => {
@@ -80,12 +122,15 @@ impl<T> Encodable for Option<T> where T: Encodable {
 			Some(ref value) => {
 				s.begin_list(1);
 				s.append(value);
-			}
+			},
 		}
 	}
 }
 
-impl<T> Decodable for Option<T> where T: Decodable {
+impl<T> Decodable for Option<T>
+where
+	T: Decodable,
+{
 	fn decode(rlp: &Rlp) -> Result<Self, DecoderError> {
 		let items = rlp.item_count()?;
 		match items {
@@ -108,13 +153,11 @@ impl Encodable for u8 {
 
 impl Decodable for u8 {
 	fn decode(rlp: &Rlp) -> Result<Self, DecoderError> {
-		rlp.decoder().decode_value(|bytes| {
-			match bytes.len() {
-				1 if bytes[0] != 0 => Ok(bytes[0]),
-				0 => Ok(0),
-				1 => Err(DecoderError::RlpInvalidIndirection),
-				_ => Err(DecoderError::RlpIsTooBig),
-			}
+		rlp.decoder().decode_value(|bytes| match bytes.len() {
+			1 if bytes[0] != 0 => Ok(bytes[0]),
+			0 => Ok(0),
+			1 => Err(DecoderError::RlpInvalidIndirection),
+			_ => Err(DecoderError::RlpIsTooBig),
 		})
 	}
 }
@@ -128,42 +171,42 @@ macro_rules! impl_encodable_for_u {
 				s.encoder().encode_value(&buffer[leading_empty_bytes..]);
 			}
 		}
-	}
+	};
 }
 
 macro_rules! impl_decodable_for_u {
 	($name: ident) => {
 		impl Decodable for $name {
 			fn decode(rlp: &Rlp) -> Result<Self, DecoderError> {
-				rlp.decoder().decode_value(|bytes| {
-					match bytes.len() {
-						0 | 1 => u8::decode(rlp).map(|v| v as $name),
-						l if l <= mem::size_of::<$name>() => {
-							if bytes[0] == 0 {
-								return Err(DecoderError::RlpInvalidIndirection);
-							}
-							let mut res = 0 as $name;
-							for (i, byte) in bytes.iter().enumerate().take(l) {
-								let shift = (l - 1 - i) * 8;
-								res += (*byte as $name) << shift;
-							}
-							Ok(res)
+				rlp.decoder().decode_value(|bytes| match bytes.len() {
+					0 | 1 => u8::decode(rlp).map(|v| v as $name),
+					l if l <= mem::size_of::<$name>() => {
+						if bytes[0] == 0 {
+							return Err(DecoderError::RlpInvalidIndirection)
 						}
-						_ => Err(DecoderError::RlpIsTooBig),
-					}
+						let mut res = 0 as $name;
+						for (i, byte) in bytes.iter().enumerate().take(l) {
+							let shift = (l - 1 - i) * 8;
+							res += (*byte as $name) << shift;
+						}
+						Ok(res)
+					},
+					_ => Err(DecoderError::RlpIsTooBig),
 				})
 			}
 		}
-	}
+	};
 }
 
 impl_encodable_for_u!(u16);
 impl_encodable_for_u!(u32);
 impl_encodable_for_u!(u64);
+impl_encodable_for_u!(u128);
 
 impl_decodable_for_u!(u16);
 impl_decodable_for_u!(u32);
 impl_decodable_for_u!(u64);
+impl_decodable_for_u!(u128);
 
 impl Encodable for usize {
 	fn rlp_append(&self, s: &mut RlpStream) {
